@@ -42,7 +42,7 @@ class TestApi(unittest.TestCase):
             response.status, http.client.OK, f"Error en la petición API a {url}"
         )
         self.assertEqual(
-            response.read().decode(), "8", "ERROR MULTIPLY"
+            response.read().decode(), "10", "ERROR MULTIPLY"
         )
     def test_api_divide(self):
         url = f"{BASE_URL}/calc/divide/10/2"
@@ -51,7 +51,7 @@ class TestApi(unittest.TestCase):
             response.status, http.client.OK, f"Error en la petición API a {url}"
         )
         self.assertEqual(
-            response.read().decode(), "8", "ERROR DIVIDE"
+            response.read().decode(), "5", "ERROR DIVIDE"
         )
 
 if __name__ == "__main__":  # pragma: no cover
