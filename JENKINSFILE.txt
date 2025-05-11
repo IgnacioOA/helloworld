@@ -1,0 +1,81 @@
+pipeline {
+    agent none
+
+    stages {
+        stage('Get Code') {
+            agent { label 'agent2' }
+            steps {
+                sh 'echo "Usuario para agent2: $(whoami)"; echo "Hostname agente2: $(hostname)"'
+                echo 'Me voy a traer el código de la rama develop del GitHub de IgnacioOA'
+                git branch: 'develop', url: 'https://github.com/IgnacioOA/helloworld.git'
+                sh 'ls -la'
+                echo "${WORKSPACE}"
+                stash name: 'source-code', includes: '**/*'
+            }
+        }
+
+        stage('Build') {
+            agent { label 'agent2' }
+            steps {
+                sh 'echo "Usuario para agent2: $(whoami)"; echo "Hostname agente2: $(hostname)"'
+                echo 'No hay que compilar nada, esto es Python'
+            }
+        }
+
+        stage('Tests') {
+            parallel {
+                stage('Unit') {
+                    agent { label 'agent3' }
+                    steps {
+                        sh 'echo "Usuario para agent3: $(whoami)"; echo "Hostname agente3: $(hostname)"'
+                        unstash 'source-code'
+                        sh '''
+                            export PYTHONPATH=$WORKSPACE
+                            pytest --junitxml=result-unit.xml test/unit
+                        '''
+                        stash name: 'unit-results', includes: 'result-unit.xml'
+                    }
+                }
+
+                stage('Rest') {
+                    agent { label 'agent3' }
+                    steps {
+                        sh 'echo "Usuario para agente3: $(whoami)"; echo "Hostname agente2: $(hostname)"'
+                        unstash 'source-code'
+                        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                            sh '''
+                                ####LEVANTO FLASK#####
+                                export FLASK_APP=app.api:api_application
+                                export FLASK_ENV=development
+
+                                flask run &
+                                
+                                ####LEVANTO WIREMOCK#####
+                                java -jar /Users/nacho/Desktop/Jenkins/wiremock/wiremock-standalone-3.13.0.jar \
+                                    --port 9090 \
+                                    --verbose \
+                                    --root-dir /Users/nacho/Desktop/Jenkins/wiremock &
+
+                                sleep 5
+
+                                export PYTHONPATH=$WORKSPACE
+                                pytest --junitxml=result-rest.xml test/rest
+                            '''
+                        }
+                        stash name: 'rest-results', includes: 'result-rest.xml'
+                    }
+                }
+            }
+        }
+
+        stage('Results') {
+            agent { label 'principal' }
+            steps {
+                sh 'echo "Usuario para agente principal: $(whoami)"; echo "Hostname agente principal: $(hostname)"'
+                unstash 'unit-results'
+                unstash 'rest-results'
+                junit '**/result-*.xml'
+            }
+        }
+    }
+}
