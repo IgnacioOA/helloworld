@@ -1,68 +1,101 @@
-
 pipeline {
     agent any
 
     stages {
         stage('Get Code') {
             steps {
-                echo 'Me voy a traer el codigo'
-                //obtener el codigo del repo
-                git 'https://github.com/IgnacioOA/helloworld.git'
+                sh 'echo "Usuario actual: $(whoami)"; echo "Hostname actual: $(hostname)"'
+                echo 'Me voy a traer el código de la rama MASTER del GitHub de IgnacioOA'
+                git branch: 'master', url: 'https://github.com/IgnacioOA/helloworld.git'
                 sh 'ls -la'
                 echo "${WORKSPACE}"
+                stash name: 'source-code', includes: '**/*'
             }
         }
-        
-        stage('Build') {
+
+        stage('Unit') {
             steps {
-                echo 'No hay que compilar nada , estoy es python'
+                sh 'echo "Usuario actual: $(whoami)"; echo "Hostname actual: $(hostname)"'
+                unstash 'source-code'
+                sh '''
+                    export PYTHONPATH=$WORKSPACE
+                    coverage run --branch --source=app --omit=app/_init_.py,app/api.py -m pytest test/unit --junitxml=result-unit.xml
+                    coverage xml
+                '''
+                stash name: 'coverage-data', includes: 'coverage.xml'
+                stash name: 'unit-results', includes: 'result-unit.xml'
+                junit 'result-unit.xml'
             }
         }
         
-        stage('Tests'){
-            parallel{
-        
-                stage('Unit') {
-                    steps {
-                        sh '''
-                            export PYTHONPATH=$WORKSPACE
-                            pytest --junitxml=result-unit.xml test/unit
-                        '''
-                     }
-                }
-                
-                stage('Rest') {
-                steps {
-                    catchError(buildResult: 'UNSTABLE' , stageResult: 'FAILURE') {
-                        sh '''
-                            export FLASK_APP=app.api:api_application
-                            export FLASK_ENV=development
-                
-                            # Ejecutar flask en segundo plano
-                            flask run &
-                
-                            # Ejecutar wiremock en segundo plano
-                            java -jar /Users/nacho/Desktop/Jenkins/wiremock/wiremock-standalone-3.13.0.jar \
-                                --port 9090 \
-                                --verbose \
-                                --root-dir /Users/nacho/Desktop/Jenkins/wiremock &
-                
-                            # Sleep para que arranquen los servicios, de lo contrario fallaran
-                            sleep 5
-                
-                            export PYTHONPATH=$WORKSPACE
-                            pytest --junitxml=result-rest.xml test/rest
-                        '''
-                        }
-                    }
+        stage('static') { //FLAKE8
+            steps {
+                catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                    sh '''
+                        flake8 --exit-zero --format=pylint app >flake8.out
+                    '''
+                    recordIssues tools: [flake8(name: 'Flake8', pattern: 'flake8.out')],
+                        qualityGates: [[threshold: 10, type: 'TOTAL', unstable: true], // Unstable (amarillo/naranja) si ≥ 8
+                                      [threshold: 11, type: 'TOTAL', unstable: false]] // Falla (rojo) si ≥ 10
+                    
                 }
             }
         }
-         stage('Results') {
-            steps{
-                junit '**/result-*.xml'
-            }   
-         }
+        
+        stage('security') { //BANDIT
+            steps {
+                catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                    sh '''
+                        bandit --exit-zero -r . -f custom -o bandit.out --msg-template "{abspath}:{line}: [{test_id}] {msg}  "
+                    '''
+                    recordIssues tools: [pyLint(name: 'Bandit', pattern: 'bandit.out')],
+                        qualityGates: [[threshold: 3, type: 'TOTAL', unstable: true], // Unstable (amarillo/naranja) si ≥ 2
+                                      [threshold: 3, type: 'TOTAL', unstable: false]] // Falla (rojo) si ≥ 4
+                    
+                }
+            }
+        }
+        
+        stage('Cobertura') { //COBERTURA
+            steps {
+                unstash 'coverage-data'
+                catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                    cobertura coberturaReportFile: 'coverage.xml', conditionalCoverageTargets: '100,0,80', lineCoverageTargets: '100,0,90'
+                }
+            }
+        }
+        
+        
+        stage('Perfomance') { //JMETER
+            steps {
+
+                catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                    sh '''
+                        echo "=== Verificando si flask.jmx existe ==="
+                        find . -name flask.jmx || true
+        
+                        echo "=== Levantando Flask en segundo plano ==="
+                        export FLASK_APP=app.api:api_application
+                        export FLASK_ENV=development
+        
+                        flask run > flask.log 2>&1 &
+                        FLASK_PID=$!
+                        echo "Flask corriendo con PID: $FLASK_PID"
+        
+                        echo "=== Esperando que Flask se inicie... ==="
+                        sleep 5
+        
+                        echo "=== Ejecutando JMeter ==="
+                        /Users/nacho/Desktop/Jenkins/JMETER/apache-jmeter-5.6.3/bin/jmeter \
+                            -n -t test/jmeter/P25.jmx -f -l flask.jtl
+                        
+                    '''
+        
+                    perfReport sourceDataFiles: 'flask.jtl'
+                }
+            }
+        }
+
         
     }
 }
