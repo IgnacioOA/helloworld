@@ -1,19 +1,22 @@
 pipeline {
-    agent any
+    agent none
 
     stages {
         stage('Get Code') {
+            agent { label 'principal' }
             steps {
                 sh 'echo "Usuario actual: $(whoami)"; echo "Hostname actual: $(hostname)"'
                 echo 'Me voy a traer el código de la rama MASTER del GitHub de IgnacioOA'
-                git branch: 'master', url: 'https://github.com/IgnacioOA/helloworld.git'
+                git branch: 'feature_fix_coverage', url: 'https://github.com/IgnacioOA/helloworld.git'
                 sh 'ls -la'
                 echo "${WORKSPACE}"
                 stash name: 'source-code', includes: '**/*'
             }
         }
 
+      
         stage('Unit') {
+            agent { label 'agent2' }
             steps {
                 sh 'echo "Usuario actual: $(whoami)"; echo "Hostname actual: $(hostname)"'
                 unstash 'source-code'
@@ -28,35 +31,8 @@ pipeline {
             }
         }
         
-        stage('static') { //FLAKE8
-            steps {
-                catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-                    sh '''
-                        flake8 --exit-zero --format=pylint app >flake8.out
-                    '''
-                    recordIssues tools: [flake8(name: 'Flake8', pattern: 'flake8.out')],
-                        qualityGates: [[threshold: 10, type: 'TOTAL', unstable: true], // Unstable (amarillo/naranja) si ≥ 8
-                                      [threshold: 11, type: 'TOTAL', unstable: false]] // Falla (rojo) si ≥ 10
-                    
-                }
-            }
-        }
-        
-        stage('security') { //BANDIT
-            steps {
-                catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-                    sh '''
-                        bandit --exit-zero -r . -f custom -o bandit.out --msg-template "{abspath}:{line}: [{test_id}] {msg}  "
-                    '''
-                    recordIssues tools: [pyLint(name: 'Bandit', pattern: 'bandit.out')],
-                        qualityGates: [[threshold: 3, type: 'TOTAL', unstable: true], // Unstable (amarillo/naranja) si ≥ 2
-                                      [threshold: 3, type: 'TOTAL', unstable: false]] // Falla (rojo) si ≥ 4
-                    
-                }
-            }
-        }
-        
         stage('Cobertura') { //COBERTURA
+            agent { label 'agent3' }
             steps {
                 unstash 'coverage-data'
                 catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
@@ -65,37 +41,72 @@ pipeline {
             }
         }
         
-        
-        stage('Perfomance') { //JMETER
-            steps {
-
-                catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-                    sh '''
-                        echo "=== Verificando si flask.jmx existe ==="
-                        find . -name flask.jmx || true
-        
-                        echo "=== Levantando Flask en segundo plano ==="
-                        export FLASK_APP=app.api:api_application
-                        export FLASK_ENV=development
-        
-                        flask run > flask.log 2>&1 &
-                        FLASK_PID=$!
-                        echo "Flask corriendo con PID: $FLASK_PID"
-        
-                        echo "=== Esperando que Flask se inicie... ==="
-                        sleep 5
-        
-                        echo "=== Ejecutando JMeter ==="
-                        /Users/nacho/Desktop/Jenkins/JMETER/apache-jmeter-5.6.3/bin/jmeter \
-                            -n -t test/jmeter/P25.jmx -f -l flask.jtl
-                        
-                    '''
-        
-                    perfReport sourceDataFiles: 'flask.jtl'
+        stage('StaticSecPerf'){ //CREO UNA PARALELIZACION CON STATIC SECURITY Y PERFORMANCE
+            parallel{
+            
+                stage('static') { //FLAKE8
+                    agent { label 'agent3' }
+                    steps {
+                        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                            sh '''
+                                flake8 --exit-zero --format=pylint app >flake8.out
+                            '''
+                            recordIssues tools: [flake8(name: 'Flake8', pattern: 'flake8.out')],
+                                qualityGates: [[threshold: 10, type: 'TOTAL', unstable: true], // Unstable (amarillo/naranja) si ≥ 8
+                                              [threshold: 11, type: 'TOTAL', unstable: false]] // Falla (rojo) si ≥ 10
+                            
+                        }
+                    }
                 }
+                
+                stage('security') { //BANDIT
+                    agent { label 'agent3' }
+                    steps {
+                        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                            sh '''
+                                bandit --exit-zero -r . -f custom -o bandit.out --msg-template "{abspath}:{line}: [{test_id}] {msg}  "
+                            '''
+                            recordIssues tools: [pyLint(name: 'Bandit', pattern: 'bandit.out')],
+                                qualityGates: [[threshold: 3, type: 'TOTAL', unstable: true], // Unstable (amarillo/naranja) si ≥ 2
+                                              [threshold: 3, type: 'TOTAL', unstable: false]] // Falla (rojo) si ≥ 4
+                            
+                        }
+                    }
+                }
+                
+                stage('Perfomance') { //JMETER
+                    agent { label 'agent2' }
+                    steps {
+        
+                        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                            sh '''
+                                echo "=== Verificando si flask.jmx existe ==="
+                                find . -name flask.jmx || true
+                
+                                echo "=== Levantando Flask en segundo plano ==="
+                                export FLASK_APP=app.api:api_application
+                                export FLASK_ENV=development
+                
+                                flask run > flask.log 2>&1 &
+                                FLASK_PID=$!
+                                echo "Flask corriendo con PID: $FLASK_PID"
+                
+                                echo "=== Esperando que Flask se inicie... ==="
+                                sleep 5
+                
+                                echo "=== Ejecutando JMeter ==="
+                                /Users/nacho/Desktop/Jenkins/JMETER/apache-jmeter-5.6.3/bin/jmeter \
+                                    -n -t test/jmeter/P25.jmx -f -l flask.jtl
+                                
+                            '''
+                
+                            perfReport sourceDataFiles: 'flask.jtl'
+                        }
+                    }
+                }
+                
             }
         }
-
         
     }
 }
